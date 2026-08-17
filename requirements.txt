@@ -1,0 +1,33 @@
+# Verified working on macOS 26 / Apple M3 Pro / Python 3.11.16 (arm64).
+#
+# Environment notes that cost real time to discover:
+#   * numpy must stay <2 -- the InsightFace code vendored inside LivePortrait
+#     raises TypeError on numpy 2.x.
+#   * Install plain `onnxruntime`, never `onnxruntime-silicon`; LivePortrait's
+#     requirements_macOS.txt pins onnxruntime-silicon==1.16.3, which has no
+#     wheels for modern Python and is disowned by its own maintainer.
+#   * torch >= 2.9 gets a native MPS grid_sampler_3d (pytorch/pytorch#160541),
+#     which is what keeps LivePortrait's warping module off the CPU fallback.
+#     Verified here on torch 2.13.0.
+#   * Do not pass --flag_do_torch_compile: torch.compile crashes on MPS.
+#   * ffmpeg arrives as a bundled binary via imageio-ffmpeg, so Homebrew is
+#     not required.
+
+numpy<2
+scipy
+opencv-python
+mediapipe==0.10.21   # 1.0.x segfaults on macOS initialising its Metal helper
+av
+imageio-ffmpeg
+pillow
+tqdm
+matplotlib
+onnxruntime
+
+# Demo 1 (LivePortrait generation) only:
+torch>=2.9
+torchvision
+
+# M3 (AU) only. Research licence: the weights stay inside the offline verifier
+# and must not be redistributed with a dataset.
+openface-test

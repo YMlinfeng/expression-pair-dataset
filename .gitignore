@@ -1,0 +1,15 @@
+# envs / tooling
+.venv/
+.bootstrap/
+.uv/
+__pycache__/
+*.pyc
+
+# third-party checkouts and model weights
+third_party/
+models/
+!models/.gitkeep
+
+# data and outputs (large binaries)
+data/
+out/
