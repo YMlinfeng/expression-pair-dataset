@@ -7,8 +7,15 @@
 40.7–47.1%，情绪 embedding 类 53.3%，而人类中位数 87.5%。检索/匹配路线的天花板就在那里，
 不是工程问题。本仓库因此分两层：
 
-- **构造层**：一次真人表演 → 扇出到 N 个外观，表情张量逐帧字节相同（Demo 1）。
+- **构造层**：一次真人表演 → 扇出到 N 个外观，**被驱动的那 45 个表情分量**逐帧逐元素相同（Demo 1，
+  精确覆盖范围见下文"Demo 1"）。
 - **验证层**（`expverify/`）：一套互相独立、合取判定的指标，只负责把"差不多"的数据拒掉。
+
+> **已知的不一致 / 请注意**
+> `METHOD.md` 第 10 节逐条列出了本仓库里**无法在代码或产物中证实**的说法，以及与既有文档不一致
+> 需要修正的表述，核查以那一节为准。最需要先知道的一条：五个距离阈值
+> （`d_bs`/`d_deform`/`d_gaze`/`d_region`/`d_au`）全部带 `target_precision_unreachable: true`，
+> 是"放过 90% 已知真阳性"的**包络阈值**，不是判别性阈值（见下文"阈值校准"）。
 
 ## 结果速览（M3 Pro 实测）
 
@@ -101,18 +108,44 @@ git clone https://github.com/KwaiVGI/LivePortrait third_party/LivePortrait
 
 ## Demo 1：A 级构造，golden config 在源码层确认
 
-`LivePortrait` video-to-video + `--animation-region exp` + `--no-flag-relative-motion`：
+`LivePortrait` video-to-video + `--animation-region exp` + `--no-flag-relative-motion`。
+非相对模式下驱动序列 `x_d_exp_lst[i] = driving_template['motion'][i]['exp']`
+（`third_party/LivePortrait/src/live_portrait_pipeline.py:228`）不含任何 source
+相关项，所以所有身份拿到的是**同一条驱动表情序列**；但它被写进的那个张量并不是整体拷贝——
+起点是 source 自己的 `exp`：
 
-```325:332:src/live_portrait_pipeline.py
-if inf_cfg.animation_region == "all" or inf_cfg.animation_region == "exp":
-    if flag_is_source_video:
-        for idx in [1,2,6,11,12,13,14,15,16,17,18,19,20]:
-            delta_new[:, idx, :] = x_d_exp_lst_smooth[i][idx, :]
+```319:319:third_party/LivePortrait/src/live_portrait_pipeline.py
+            delta_new = x_s_info['exp'].clone()
 ```
 
-非相对模式下 `x_d_exp_lst[i] = driving_template['motion'][i]['exp']`，不含任何 source 相关项，
-所以所有身份拿到同一个表情张量；而 `scale_new / t_new / R_new` 全部来自 source，各自保留
-自己的头部姿态、位移、背景与光照。21 个关键点里有 8 个不被覆盖，身份不被抹掉。
+absolute 分支只覆盖其中一部分（`flag_is_source_video` 为真时取平滑后的驱动序列）：
+
+```367:373:third_party/LivePortrait/src/live_portrait_pipeline.py
+                if inf_cfg.animation_region == "all" or inf_cfg.animation_region == "exp":
+                    for idx in [1,2,6,11,12,13,14,15,16,17,18,19,20]:
+                        delta_new[:, idx, :] = x_d_exp_lst_smooth[i][idx, :] if flag_is_source_video else ...
+                    delta_new[:, 3:5, 1] = x_d_exp_lst_smooth[i][3:5, 1] if flag_is_source_video else ...
+                    delta_new[:, 5, 2]   = x_d_exp_lst_smooth[i][5, 2]   if flag_is_source_video else ...
+                    delta_new[:, 8, 2]   = x_d_exp_lst_smooth[i][8, 2]   if flag_is_source_video else ...
+                    delta_new[:, 9, 1:]  = x_d_exp_lst_smooth[i][9, 1:]  if flag_is_source_video else ...
+```
+
+`exp` 的形状是 `(1, 21, 3)`，共 63 个数，上面五行只覆盖 **45 / 63**：13 个关键点
+（1,2,6,11–20）的全部 3 个坐标 = 39，加上关键点 3、4 的 y、5 的 z、8 的 z、9 的 y/z，共 6 个。
+剩下 **18 / 63 来自 source**：关键点 0、7、10 完整保留 source 自己的值（9 个），
+关键点 3、4 的 x/z（4 个）、5 的 x/y（2 个）、8 的 x/y（2 个）、9 的 x（1 个）也保留。
+所以"表情张量被整体拷贝、字节相同、无 source 相关项"是过强的说法，准确的说法是：
+**被驱动的那 45 个分量在所有 source 上逐元素相同**。此外 `stitching(x_s, x_d_i_new)`
+（`live_portrait_pipeline.py:411`）是一个吃 `x_s` 的学习模块，最终关键点在数值上仍依赖 source。
+
+这不削弱构造路线的逻辑：表情相等仍然是生成过程的数学后果（同一条序列的同一份拷贝，
+且这个子集就是 LivePortrait 定义的"表情区域"），也仍然解释 absolute / relative 的对照——
+relative 分支第一项显式是 `source_template_dct['motion'][i]['exp']`
+（`live_portrait_pipeline.py:214`），按构造就不该表情相同。只是这条保证的**范围**比原先写的窄：
+它覆盖 45 个被驱动分量，不覆盖整个表情表示。
+
+`scale_new / t_new / R_new` 则全部来自 source，各自保留自己的头部姿态、位移、背景与光照。
+21 个关键点里有 8 个（0,3,4,5,7,8,9,10）不被完整覆盖，身份不被抹掉。
 
 两个必须处理的实现细节：
 
@@ -131,7 +164,13 @@ if inf_cfg.animation_region == "all" or inf_cfg.animation_region == "exp":
 
 绝对阈值说不出"足够细"。阈值只能说"这两张脸相差小于 ε"，说不了"这个匹配比视频自身的
 逐帧表情变化还细"——而后者才是真正的要求。所以对每个参考帧 t，在目标视频 `[t-W, t+W]`
-内找最近帧，要求 argmin 落在 t±1，并且对齐距离要小于**同一段视频自己** t±k 帧的距离。
+内找最近帧，要求 argmin 落在 t±1（`g_rank1`），并把对齐距离与**同一段视频自己** t±k 帧的
+距离作比（`ratio = d_deform / d_self`，门是 `g_ratio`）。
+
+**但要说清 `g_ratio` 现在的实际状态。** "必须赢过时序邻帧"（即 `ratio < 1`）是设计意图；
+手选 `max_ratio = 0.80` 会全拒（连构造保证相同的正样本 ratio 中位数也是 1.4717），所以改成拟合，
+而**实际生效的值是 4.4321**，它在正样本上的通过率 **0.939**，已经接近空门，只拦严重错配。
+细粒度严格性实际来自 `g_rank1`（正样本通过率 **0.378**）加 pair 级聚合，不是来自 ratio。
 
 同步视频对最难的负样本本来就是时序相邻帧：身份、姿态、光照、背景全同，只差几十毫秒的
 肌肉运动。要求跨身份匹配赢过它们，就是"差不多的我不要"的可执行定义。静止段无法支持这个
@@ -199,6 +238,26 @@ if inf_cfg.animation_region == "all" or inf_cfg.animation_region == "exp":
 硬负样本取**同一对 pair 平移 k 帧**，保证正负样本处在同一个噪声机制里——否则 MediaPipe
 VIDEO 模式的时序平滑会让同段内负样本显得异常接近，AUC 会掉到 0.5 以下。
 
+**必须报的一件事：五个距离阈值全部是退化回退值，不是按 95% precision 拟合出来的工作点。**
+`fit_threshold` 找不到同时满足 `precision ≥ 0.95` 与 `recall ≥ 0.5` 的阈值时，会退回
+**正样本分布的 q90**，并在 report 里打上 `target_precision_unreachable: true`——让失败可见，
+而不是静默清空数据集。`out/calibration/liveportrait.json` 里 `d_bs / d_deform / d_gaze /
+d_region / d_au` **五个全部**带 `separated: false` + `target_precision_unreachable: true`，
+且 `recall` 五个完全相同 = **0.8983（415/462）**，这就是它们都走了同一条回退分支的证据。
+
+所以 `d_bs ≤ 0.047431`、`d_deform ≤ 0.034109`、`d_gaze ≤ 0.310878`、`d_region ≤ 1.352156`、
+`d_au ≤ 0.219957` 的含义是**"正样本包络"阈值**（放过 90% 的已知真阳性），
+**不是**"能以 95% precision 区分同表情与差 3 帧"的判别阈值。它们的作用是拦粗差。
+`augment.json` 的情况完全一样（五个指标同为 `recall = 0.8996`、`target_precision_unreachable: true`）。
+判别力实际来自 `g_rank1`（正样本通过率 0.378）、`g_energy`（0.442）和 pair 级聚合（AUC 0.993）。
+
+**`min_energy` 是从 CREMA-D 搬过来的，不是按被评估的语料算的。** 它取语料 energy 的 35% 分位数，
+而这里的"语料"永远是 CREMA-D，与 `--positives` 选什么无关：两份校准文件里 `min_energy`
+**逐位相同**（`0.023649911954998968`）。这个阈值被套到 LivePortrait 输出上，而后者 energy 明显更低
+（交付的 pair 01 `med_energy` 只有 **0.0088**），于是 `g_energy` 在正样本上通过率只有 **0.442**，
+成为第二个瓶颈门——这一部分是跨语料阈值搬运的产物，不是数据质量问题。正确做法是按目标语料自己的
+energy 分布重算（代码支持 `--energy-percentile`），本次没做。
+
 ## 明确不走的路
 
 - **换脸（inswapper / SimSwap）**：模型已被 InsightFace 下架、仅限非商业；128×128 是唇部
@@ -217,9 +276,11 @@ VIDEO 模式的时序平滑会让同段内负样本显得异常接近，AUC 会�
   M4——在 FaRL/SigLIP2 backbone 上用 FEC strong-agreement triplet 微调一个感知指标
   （这是唯一经人类判断验证过的一路，可望从 ~53% 抬到 ~80%+）。这一步需要 GPU，不在本次范围。
 - **测量分辨率就是粒度上限**：脸在解码帧里占多少像素直接决定 landmark 精度。Demo 1 的
-  summary 里列了每段的 face px（120–526 px），一对里较小的那侧是瓶颈。s13 是全身镜头，
-  人脸只占画面高度约 7%，MediaPipe 的短距 BlazeFace 整帧检测直接返回空——不是报错，
-  是安静地给出全无效的一段。现在用由粗到细的分块搜索兜底。
+  summary 里列了每段的 **crop box 边长**（118–526 px），一对里较小的那侧是瓶颈。
+  注意这一列不是人脸高度：`face_px = crop_box[2]`，而框边长 = 人脸跨度 × `margin (1.9)`，
+  所以真实人脸跨度要除以 1.9——driver 约 **277 px**（不是 526），s13 约 **63 px**（不是 120）。
+  s13 是全身镜头，人脸只占画面高度约 7%，MediaPipe 的短距 BlazeFace 整帧检测直接返回空——
+  不是报错，是安静地给出全无效的一段。现在用由粗到细的分块搜索兜底。
 - **单一生成器偏置**：Track A 目前只有 LivePortrait 一个生成器，需要引入第二个做交叉验证。
 - **样本量小**：Demo 1 只有 3 个 source × 1 个 driver，校准正样本只有 6 对。
 

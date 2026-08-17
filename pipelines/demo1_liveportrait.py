@@ -334,10 +334,12 @@ def main() -> int:
     sections = ["# Demo 1 - LivePortrait construction-guaranteed pairs\n",
                 f"Driver `{driver_src.name}`, {n} frames, "
                 f"{len(sources)} sources, spec `{spec.name}`.\n",
-                "\nMeasurement resolution (face height in decoded pixels) sets the "
-                "granularity ceiling for every metric below; the smaller side of a "
-                "pair is the one that binds:\n\n"
-                "| clip | face px |\n| --- | ---: |\n"
+                "\nMeasurement resolution sets the granularity ceiling for every metric "
+                "below; the smaller side of a pair is the one that binds. The number is "
+                "`crop_box[2]`, the crop-box side length, i.e. the face span times "
+                "`margin` (1.9) -- divide by 1.9 for the true face span in decoded "
+                "pixels:\n\n"
+                "| clip | crop box px |\n| --- | ---: |\n"
                 + "\n".join(f"| {k} | {v} |" for k, v in sorted(face_px.items())) + "\n"]
     print()
     for v in variants:
